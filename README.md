@@ -10,7 +10,7 @@ Static analysis tool for kernel function call stack analysis and lock context ch
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.12+
 - cscope tool
 - Pre-built cscope database
 
@@ -82,11 +82,11 @@ make check-deps    # Check system dependencies
 Build cscope database in kernel source directory:
 
 ```bash
-# Generate file list
+# Generate file list (optional)
 find . -name "*.c" -o -name "*.h" > cscope.files
 
 # Build database
-cscope -b -q -k
+cscope -Rkbq
 ```
 
 ### 2. Configuration Options
