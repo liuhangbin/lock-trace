@@ -22,7 +22,7 @@ class LockTraceCLI:
     async def setup(
         self,
         database_path: str,
-        max_depth: int = 10,
+        max_depth: int = 1,
         cscope_file: Optional[str] = None,
         source_dir: Optional[str] = None,
         enable_callback_search: bool = True,
@@ -609,7 +609,7 @@ Examples:
         "-m",
         type=int,
         default=10,
-        help="Maximum depth for call tracing (default: 10)",
+        help="Maximum depth for call tracing (default: 1)",
     )
 
     parser.add_argument(
