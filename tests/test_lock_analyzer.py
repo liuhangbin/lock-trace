@@ -709,3 +709,99 @@ class TestLockAnalyzerExcludeFunctions:
 
         assert isinstance(results, list)
         self.analyzer.analyze_lock_context = original_analyze
+
+    @pytest.mark.asyncio
+    async def test_analyze_path_locks_no_target_locks_shows_protection(self):
+        """Test that analyze_path_locks returns protection info when no target_locks specified."""
+        # Mock call path
+        call_path = CallPath(functions=["func_a", "func_b"], depth=1)
+
+        # Mock lock operations - func_a has a complete lock section (acquire + release)
+        async def mock_find_operations(func):
+            if func == "func_a":
+                return [
+                    LockOperation(
+                        "rtnl_lock",
+                        LockType.CUSTOM,
+                        "acquire",
+                        "func_a",
+                        "file.c",
+                        10,
+                        "rtnl_lock();",
+                    ),
+                    LockOperation(
+                        "rtnl_unlock",
+                        LockType.CUSTOM,
+                        "release",
+                        "func_a",
+                        "file.c",
+                        20,
+                        "rtnl_unlock();",
+                    ),
+                ]
+            return []
+
+        self.analyzer.find_lock_operations = AsyncMock(side_effect=mock_find_operations)
+
+        # Mock cscope calls for call order filtering
+        self.mock_cscope.get_functions_called_by.return_value = [
+            FunctionCall("func_b", "file.c", 15, "func_b();")
+        ]
+
+        # Test with target_locks=None (no specific locks requested)
+        context = await self.analyzer._analyze_path_locks(call_path, target_locks=None)
+
+        # Internal analyzer behavior: when no target_locks, still shows protection evidence
+        assert context.function == "func_b"
+        assert context.call_path == ["func_a", "func_b"]
+        assert "rtnl_lock" in context.held_locks  # Should show protection evidence
+        assert len(context.lock_operations) == 2  # Operations should be shown
+
+    @pytest.mark.asyncio
+    async def test_analyze_path_locks_with_target_locks_shows_protection(self):
+        """Test that analyze_path_locks returns held_locks when target_locks specified."""
+        # Mock call path
+        call_path = CallPath(functions=["func_a", "func_b"], depth=1)
+
+        # Mock lock operations - func_a has a complete lock section (acquire + release)
+        async def mock_find_operations(func):
+            if func == "func_a":
+                return [
+                    LockOperation(
+                        "rtnl_lock",
+                        LockType.CUSTOM,
+                        "acquire",
+                        "func_a",
+                        "file.c",
+                        10,
+                        "rtnl_lock();",
+                    ),
+                    LockOperation(
+                        "rtnl_unlock",
+                        LockType.CUSTOM,
+                        "release",
+                        "func_a",
+                        "file.c",
+                        20,
+                        "rtnl_unlock();",
+                    ),
+                ]
+            return []
+
+        self.analyzer.find_lock_operations = AsyncMock(side_effect=mock_find_operations)
+
+        # Mock cscope calls for call order filtering
+        self.mock_cscope.get_functions_called_by.return_value = [
+            FunctionCall("func_b", "file.c", 15, "func_b();")
+        ]
+
+        # Test with target_locks specified
+        context = await self.analyzer._analyze_path_locks(
+            call_path, target_locks=["rtnl"]
+        )
+
+        # When target_locks are specified and locks provide protection, held_locks should show protection
+        assert context.function == "func_b"
+        assert context.call_path == ["func_a", "func_b"]
+        assert "rtnl_lock" in context.held_locks  # Should show protection evidence
+        assert len(context.lock_operations) == 2  # Operations should still be shown

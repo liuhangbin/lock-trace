@@ -307,14 +307,18 @@ class LockTraceCLI:
 
         if tree:
             # Display as tree structure with lock information
-            self._display_lock_context_tree(function, contexts)
+            self._display_lock_context_tree(function, contexts, locks)
         else:
             # Display as list
             for i, context in enumerate(contexts, 1):
                 path_str = " → ".join(context.call_path)
-                held_locks = (
-                    list(context.held_locks) if context.held_locks else ["None"]
-                )
+                # When no specific locks are requested from CLI, always show "None"
+                if locks is None:
+                    held_locks = ["None"]
+                else:
+                    held_locks = (
+                        list(context.held_locks) if context.held_locks else ["None"]
+                    )
 
                 print(f"{i:3d}: {path_str}")
                 print(f"     Held locks: {', '.join(held_locks)}")
@@ -474,12 +478,15 @@ class LockTraceCLI:
                         break
             print(line)
 
-    def _display_lock_context_tree(self, function: str, contexts: List) -> None:
+    def _display_lock_context_tree(
+        self, function: str, contexts: List, locks: Optional[List[str]] = None
+    ) -> None:
         """Display lock context results as a tree structure.
 
         Args:
             function: Target function
             contexts: List of LockContext objects
+            locks: List of specific locks requested (None if no specific locks)
         """
         from .call_tracer import CallPath
 
@@ -501,7 +508,13 @@ class LockTraceCLI:
         # Show lock details for each unique path
         print("\nLock context details:")
         for i, context in enumerate(contexts, 1):
-            held_locks = list(context.held_locks) if context.held_locks else ["None"]
+            # When no specific locks are requested from CLI, always show "None"
+            if locks is None:
+                held_locks = ["None"]
+            else:
+                held_locks = (
+                    list(context.held_locks) if context.held_locks else ["None"]
+                )
             print(f"{i:3d}: Held locks: {', '.join(held_locks)}")
 
     def _display_unprotected_tree(
