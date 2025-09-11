@@ -36,7 +36,7 @@ class TestLockAnalyzer:
         assert len(operations) == 1
         assert operations[0].lock_type == LockType.SPINLOCK
         assert operations[0].operation == "acquire"
-        assert operations[0].lock_name == "my_lock"
+        assert operations[0].lock_name == "spin_lock"
         assert operations[0].function == "test_func"
 
     def test_identify_mutex_operation(self):
@@ -48,7 +48,7 @@ class TestLockAnalyzer:
         assert len(operations) == 1
         assert operations[0].lock_type == LockType.MUTEX
         assert operations[0].operation == "acquire"
-        assert operations[0].lock_name == "my_mutex"
+        assert operations[0].lock_name == "mutex_lock"
         assert operations[0].function == "test_func"
 
     def test_identify_lock_release(self):
@@ -60,18 +60,18 @@ class TestLockAnalyzer:
         assert len(operations) == 1
         assert operations[0].lock_type == LockType.SPINLOCK
         assert operations[0].operation == "release"
-        assert operations[0].lock_name == "my_lock"
+        assert operations[0].lock_name == "spin_lock"
         assert operations[0].function == "test_func"
 
     def test_extract_lock_name_simple(self):
         """Test extraction of lock variable name."""
         # Test simple case with &variable
         name = self.analyzer._extract_lock_name("spin_lock(&my_lock);", "spin_lock")
-        assert name == "my_lock"
+        assert name == "spin_lock"
 
         # Test case without &
         name = self.analyzer._extract_lock_name("spin_lock(my_lock);", "spin_lock")
-        assert name == "my_lock"
+        assert name == "spin_lock"
 
     def test_extract_lock_name_fallback(self):
         """Test fallback when lock name cannot be extracted."""
@@ -96,8 +96,8 @@ class TestLockAnalyzer:
         assert len(operations) == 2
 
         lock_names = [op.lock_name for op in operations]
-        assert "lock1" in lock_names
-        assert "lock2" in lock_names
+        assert "spin_lock" in lock_names
+        assert "mutex_lock" in lock_names
 
     @pytest.mark.asyncio
     async def test_analyze_path_locks(self):
@@ -477,7 +477,7 @@ class TestLockAnalyzer:
         assert len(operations) == 1
         assert operations[0].lock_type == LockType.CUSTOM
         assert operations[0].operation == "release"
-        assert operations[0].lock_name == "rtnl_unlock"
+        assert operations[0].lock_name == "rtnl_lock"
 
         # Test rtnl_net_lock operation with variable
         call = FunctionCall(
@@ -730,7 +730,7 @@ class TestLockAnalyzerExcludeFunctions:
                         "rtnl_lock();",
                     ),
                     LockOperation(
-                        "rtnl_unlock",
+                        "rtnl_lock",
                         LockType.CUSTOM,
                         "release",
                         "func_a",
@@ -777,7 +777,7 @@ class TestLockAnalyzerExcludeFunctions:
                         "rtnl_lock();",
                     ),
                     LockOperation(
-                        "rtnl_unlock",
+                        "rtnl_lock",
                         LockType.CUSTOM,
                         "release",
                         "func_a",

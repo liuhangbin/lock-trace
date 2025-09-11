@@ -312,7 +312,8 @@ class LockTraceCLI:
             # Display as list
             for i, context in enumerate(contexts, 1):
                 path_str = " → ".join(context.call_path)
-                # When no specific locks are requested from CLI, always show "None"
+                # When no specific locks are requested from CLI, show "None"
+                # When specific locks are requested, show actual held locks
                 if locks is None:
                     held_locks = ["None"]
                 else:

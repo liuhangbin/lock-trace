@@ -237,21 +237,59 @@ class LockAnalyzer:
         Returns:
             Extracted lock variable name or function name if extraction fails
         """
-        # For certain lock types, use the function name directly instead of extracting variables
+        # For certain lock types, normalize the function name to a common lock identifier
         # This is needed for locks where the function name itself is the important identifier
-        function_name_prefixes = ["rcu_read_", "rtnl", "netdev_", "netlink_", "genl"]
 
-        if any(function_name.startswith(prefix) for prefix in function_name_prefixes):
-            # Additional check for rtnl/netdev to ensure it's actually a lock function
-            if function_name.startswith(("rtnl", "netdev_")):
-                if "lock" in function_name or "unlock" in function_name:
-                    return function_name
-            else:
-                return function_name
+        # Handle function-based locks where lock/unlock functions need normalization
+
+        # Spinlock variants - normalize lock/unlock pairs to common names for proper pairing
+        if function_name in ("spin_lock", "spin_unlock"):
+            return "spin_lock"  # Basic spinlock
+        elif function_name in ("spin_lock_bh", "spin_unlock_bh"):
+            return "spin_lock_bh"  # Bottom half variant
+        elif function_name in ("spin_lock_irq", "spin_unlock_irq"):
+            return "spin_lock_irq"  # IRQ variant
+        elif function_name in ("spin_lock_irqsave", "spin_unlock_irqrestore"):
+            return "spin_lock_irqsave"  # IRQ save/restore variant
+
+        # Mutex variants - normalize lock/unlock pairs
+        elif function_name in ("mutex_lock", "mutex_unlock"):
+            return "mutex_lock"  # Basic mutex
+        elif function_name in ("mutex_lock_interruptible", "mutex_unlock"):
+            return "mutex_lock"  # Interruptible variant still pairs with regular unlock
+        elif function_name in ("mutex_trylock", "mutex_unlock"):
+            return "mutex_lock"  # Try variant still pairs with regular unlock
+
+        # RTNL locks - normalize lock/unlock pairs to common names for proper pairing
+        elif function_name in ("rtnl_lock", "rtnl_unlock"):
+            return "rtnl_lock"  # Normalize to a common name
+        elif function_name in ("rtnl_net_lock", "rtnl_net_unlock"):
+            return "rtnl_net_lock"  # Normalize net variant
+        elif function_name in ("rtnl_nets_lock", "rtnl_nets_unlock"):
+            return "rtnl_nets_lock"  # Normalize nets variant
+
+        # Other RTNL variants should keep their specific names
+        elif function_name.startswith("rtnl") and (
+            "lock" in function_name or "unlock" in function_name
+        ):
+            return function_name
+
+        # RCU locks - keep as-is since they're already descriptive
+        elif function_name.startswith("rcu_read_"):
+            return function_name
+
+        # Other function-based locks
+        elif any(
+            function_name.startswith(prefix)
+            for prefix in ["netdev_", "netlink_", "genl"]
+        ):
+            return function_name
 
         # Try to extract variable name from function call
-        # Look for patterns like "spin_lock(&variable)" or "mutex_lock(&variable)"
-        match = re.search(r"\(&?([a-zA-Z_][a-zA-Z0-9_]*)\)", context)
+        # Look for patterns like "spin_lock(&variable)" or "mutex_lock(&variable)" or "spin_lock(&x->lock)"
+        match = re.search(
+            r"\(&?([a-zA-Z_][a-zA-Z0-9_]*(?:->[a-zA-Z_][a-zA-Z0-9_]*)*)\)", context
+        )
         if match:
             return match.group(1)
 
@@ -268,7 +306,13 @@ class LockAnalyzer:
         target_function: str,
         operations: List[LockOperation],
     ) -> List[LockOperation]:
-        """Filter lock operations to only include those before the target function call.
+        """Filter lock operations to only include those relevant to the target function call.
+
+        This uses a lock pairing algorithm:
+        1. Find the target function call line
+        2. Scan upward from the call to find relevant lock acquisitions
+        3. For each acquisition, scan downward to find the matching release
+        4. Only include operations that are part of locks held during the target call
 
         Args:
             caller_function: Function that calls the target
@@ -276,7 +320,7 @@ class LockAnalyzer:
             operations: All lock operations in the caller function
 
         Returns:
-            List of lock operations that occur before the target function call
+            List of lock operations that are relevant to the target function call
         """
         # Get the line number where the target function is called
         calls = await self.cscope.get_functions_called_by(caller_function)
@@ -287,17 +331,69 @@ class LockAnalyzer:
                 target_call_line = call.line
                 break
 
-        # If we can't find the call, return all operations (fallback to old behavior)
+        # If we can't find the call, return no operations to be conservative
         if target_call_line is None:
-            return operations
+            return []
 
-        # Filter operations to only include those before the target call
-        filtered_operations = []
-        for op in operations:
-            if op.line < target_call_line:
-                filtered_operations.append(op)
+        # Sort operations by line number for easier processing
+        sorted_operations = sorted(operations, key=lambda op: op.line)
 
-        return filtered_operations
+        return self._find_relevant_lock_operations(sorted_operations, target_call_line)
+
+    def _find_relevant_lock_operations(
+        self, sorted_operations: List[LockOperation], target_call_line: int
+    ) -> List[LockOperation]:
+        """Find lock operations that are relevant to the target function call using improved lock pairing.
+
+        This algorithm handles two cases:
+        1. Locks with matching acquire/release pairs spanning the call
+        2. Locks acquired before the call but not released (held across function call)
+
+        It correctly ignores conditional releases in error paths by prioritizing
+        releases that occur after the target call.
+
+        Args:
+            sorted_operations: Lock operations sorted by line number
+            target_call_line: Line number of the target function call
+
+        Returns:
+            List of relevant lock operations
+        """
+        relevant_operations = []
+
+        # Separate operations by their position relative to the call
+        operations_before_call = [
+            op for op in sorted_operations if op.line < target_call_line
+        ]
+        operations_after_call = [
+            op for op in sorted_operations if op.line > target_call_line
+        ]
+
+        # Track acquisitions and their status
+        held_locks_during_call = {}  # lock_name -> acquisition_operation
+
+        # Process acquisitions from most recent to oldest (closer to call first)
+        for op in reversed(operations_before_call):
+            if op.operation == "acquire":
+                if op.lock_name not in held_locks_during_call:
+                    held_locks_during_call[op.lock_name] = op
+                    relevant_operations.append(op)
+
+        # For each held lock, check if there's a corresponding release after the call
+        for lock_name, _acquire_op in held_locks_during_call.items():
+            # Find the first release of this lock after the target call
+            for release_op in operations_after_call:
+                if (
+                    release_op.operation == "release"
+                    and release_op.lock_name == lock_name
+                ):
+                    relevant_operations.append(release_op)
+                    break  # Only take the first matching release
+
+        # Sort the relevant operations back by line number
+        relevant_operations.sort(key=lambda op: op.line)
+
+        return relevant_operations
 
     def _lock_matches_target(self, lock_name: str, target_locks: List[str]) -> bool:
         """Check if a lock name matches any of the target locks.
@@ -429,9 +525,14 @@ class LockAnalyzer:
             function_acquires = set()
             function_releases = set()
 
-            # For display: always show all operations regardless of target_locks filter
-            # The target_locks filter only affects the "Held locks" state, not the operations display
-            operations_for_display = original_operations
+            # For display: show filtered operations for direct callers, all operations for others
+            # For the function that directly calls the target, show only relevant operations
+            if i == len(path_functions) - 1:  # Function that calls the target
+                operations_for_display = operations  # Use filtered operations
+            else:
+                operations_for_display = (
+                    original_operations  # Use all operations for other functions
+                )
 
             for op in operations:
                 # Check if this operation matches target filter for state tracking
@@ -462,8 +563,8 @@ class LockAnalyzer:
                     protected_by_locks.add(lock)
 
         # If we found protection evidence but no currently held locks,
-        # use the protection evidence (only when not filtering by target_locks)
-        if not held_locks and protected_by_locks and not target_locks:
+        # use the protection evidence. This handles complete lock sections (acquire + release)
+        if not held_locks and protected_by_locks:
             held_locks = protected_by_locks
 
         return LockContext(
